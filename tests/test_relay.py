@@ -40,7 +40,9 @@ class RoutingTests(unittest.TestCase):
         msg = complete("/v1/messages", {"system": "Be brief", "messages": [
             {"role": "user", "content": [{"type": "text", "text": "Hi"}]}]}, PROVIDERS, 10)
         self.assertEqual(msg["content"][0]["text"], "Hello")
-        self.assertEqual(mock_generate.call_count, 2)
+        response = complete("/v1/responses", {"input": "Hi"}, PROVIDERS, 10)
+        self.assertEqual(response["output"][0]["content"][0]["text"], "Hello")
+        self.assertEqual(mock_generate.call_count, 3)
 
     def test_unsupported_input_fails_before_cli_call(self):
         for body in ({"stream": True, "messages": [{"role": "user", "content": "Hi"}]},
@@ -100,12 +102,25 @@ class ServerTests(unittest.TestCase):
     def test_http_round_trip_and_errors(self, _):
         status, health = self.request("GET", "/health")
         self.assertEqual((status, health["status"]), (200, "ok"))
+        status, models = self.request("GET", "/v1/models")
+        self.assertIn("auto", [item["id"] for item in models["data"]])
         status, data = self.request("POST", "/v1/chat/completions", {"messages": [
             {"role": "user", "content": "ping"}]})
         self.assertEqual((status, data["choices"][0]["message"]["content"]), (200, "pong"))
+        status, data = self.request("POST", "/v1/responses", {"input": "ping"})
+        self.assertEqual((status, data["output_text"]), (200, "pong"))
         status, error = self.request("POST", "/v1/messages", {"messages": []})
         self.assertEqual(status, 400)
         self.assertIn("messages", error["error"]["message"])
+
+    def test_rejects_browser_origin(self):
+        connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=3)
+        connection.request("POST", "/v1/responses", body='{"input":"hello"}', headers={
+            "Content-Type": "application/json", "Origin": "https://example.com"})
+        response = connection.getresponse()
+        self.assertEqual(response.status, 403)
+        response.read()
+        connection.close()
 
     @patch("llmrelay.api.generate", side_effect=ProviderError("provider unavailable"))
     def test_provider_failure_is_json(self, _):

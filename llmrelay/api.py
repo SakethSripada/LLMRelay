@@ -112,15 +112,50 @@ def _prompt(messages: list[dict[str, str]], max_tokens: int | None) -> str:
             json.dumps(messages, ensure_ascii=False))
 
 
+def _response_messages(body: dict) -> list[dict[str, str]]:
+    messages = []
+    instructions = body.get("instructions")
+    if instructions is not None:
+        if not isinstance(instructions, str):
+            raise RequestError("instructions must be a string.")
+        messages.append({"role": "system", "content": instructions})
+    source = body.get("input")
+    if isinstance(source, str):
+        messages.append({"role": "user", "content": source})
+        return messages
+    if not isinstance(source, list) or not source:
+        raise RequestError("input must be text or a nonempty array of text messages.")
+    for index, item in enumerate(source):
+        if not isinstance(item, dict) or item.get("role") not in ("system", "developer", "user", "assistant"):
+            raise RequestError(f"input[{index}].role is unsupported.")
+        content = item.get("content")
+        if isinstance(content, list):
+            allowed = {"input_text", "output_text", "text"}
+            if not all(isinstance(part, dict) and part.get("type") in allowed and
+                       isinstance(part.get("text"), str) for part in content):
+                raise RequestError(f"input[{index}].content must contain text blocks only.")
+            content = "\n".join(part["text"] for part in content)
+        if not isinstance(content, str):
+            raise RequestError(f"input[{index}].content must be text.")
+        messages.append({"role": item["role"], "content": content})
+    if messages[-1]["role"] != "user":
+        raise RequestError("The last input message must have role user.")
+    return messages
+
+
 def complete(path: str, body: object, providers: dict[str, Provider], timeout: int) -> dict:
     if not isinstance(body, dict):
         raise RequestError("Request body must be a JSON object.")
     anthropic = path == "/v1/messages"
+    responses = path == "/v1/responses"
     if body.get("stream") not in (None, False):
         raise RequestError("Streaming is not supported yet.")
     if anthropic:
         _reject(body, "tools", "tool_choice", "thinking", "output_config",
                 "temperature", "top_p", "top_k", "stop_sequences")
+    elif responses:
+        _reject(body, "tools", "tool_choice", "text", "previous_response_id",
+                "parallel_tool_calls", "include", "temperature", "top_p", "metadata")
     else:
         _reject(body, "tools", "tool_choice", "response_format", "functions",
                 "function_call", "logprobs", "modalities", "audio", "stop",
@@ -128,11 +163,11 @@ def complete(path: str, body: object, providers: dict[str, Provider], timeout: i
                 "logit_bias", "max_completion_tokens", "parallel_tool_calls")
         if "n" in body and (type(body["n"]) is not int or body["n"] != 1):
             raise RequestError("Only n=1 is supported.")
-    max_tokens = body.get("max_tokens")
+    max_tokens = body.get("max_output_tokens") if responses else body.get("max_tokens")
     if max_tokens is not None and (type(max_tokens) is not int or not 1 <= max_tokens <= 100000):
-        raise RequestError("max_tokens must be an integer from 1 to 100000.")
+        raise RequestError("Output token limit must be an integer from 1 to 100000.")
     selection = select(body, providers)
-    messages = _messages(body, anthropic)
+    messages = _response_messages(body) if responses else _messages(body, anthropic)
     result = generate(selection.provider, _prompt(messages, max_tokens), selection.model,
                       selection.effort, timeout)
     created = int(time.time())
@@ -142,6 +177,17 @@ def complete(path: str, body: object, providers: dict[str, Provider], timeout: i
                 "stop_reason": "end_turn", "stop_sequence": None,
                 "usage": {"input_tokens": result.input_tokens or 0,
                           "output_tokens": result.output_tokens or 0}}
+    if responses:
+        return {"id": f"resp_{uuid.uuid4().hex}", "object": "response",
+                "created_at": created, "status": "completed", "model": selection.label,
+                "output": [{"id": f"msg_{uuid.uuid4().hex}", "type": "message",
+                            "status": "completed", "role": "assistant",
+                            "content": [{"type": "output_text", "text": result.text,
+                                         "annotations": []}]}],
+                "output_text": result.text,
+                "usage": {"input_tokens": result.input_tokens or 0,
+                          "output_tokens": result.output_tokens or 0,
+                          "total_tokens": (result.input_tokens or 0) + (result.output_tokens or 0)}}
     return {"id": f"chatcmpl_{uuid.uuid4().hex}", "object": "chat.completion",
             "created": created, "model": selection.label,
             "choices": [{"index": 0, "message": {"role": "assistant", "content": result.text},

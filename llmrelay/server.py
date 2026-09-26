@@ -56,16 +56,29 @@ class RelayHandler(BaseHTTPRequestHandler):
             self._error(RequestError("Endpoint not found.", 404, "not_found"))
 
     def do_POST(self):
-        if self.path not in ("/v1/chat/completions", "/v1/messages"):
+        if self.path not in ("/v1/chat/completions", "/v1/responses", "/v1/messages"):
             self._error(RequestError("Endpoint not found.", 404, "not_found"))
+            self.close_connection = True
+            return
+        origin = self.headers.get("Origin")
+        if origin and origin not in (f"http://127.0.0.1:{self.server.server_port}",
+                                     f"http://localhost:{self.server.server_port}"):
+            self._error(RequestError("Cross-origin requests are not allowed.", 403, "forbidden"))
+            self.close_connection = True
+            return
+        if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
+            self._error(RequestError("Content-Type must be application/json.", 415))
+            self.close_connection = True
             return
         if self.headers.get("Transfer-Encoding"):
             self._error(RequestError("Chunked request bodies are unsupported.", 411))
+            self.close_connection = True
             return
         try:
             length = int(self.headers.get("Content-Length", ""))
         except ValueError:
             self._error(RequestError("Content-Length is required.", 411))
+            self.close_connection = True
             return
         if length < 0 or length > MAX_BODY:
             self._error(RequestError("Request body exceeds 1 MiB.", 413))
@@ -115,7 +128,7 @@ def main():
     print(f"LLMRelay: http://127.0.0.1:{args.port}/v1", flush=True)
     print(f"Available: {', '.join(providers)} | default: "
           f"{'codex' if 'codex' in providers else 'claude'}", flush=True)
-    print("OpenAI chat: /v1/chat/completions | Anthropic messages: /v1/messages", flush=True)
+    print("OpenAI: /v1/chat/completions, /v1/responses | Anthropic: /v1/messages", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
