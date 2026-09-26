@@ -138,6 +138,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual((status, data["output_text"]), (200, "pong"))
         status, error = self.request("POST", "/v1/messages", {"messages": []})
         self.assertEqual(status, 400)
+        self.assertEqual(error["type"], "error")
         self.assertIn("messages", error["error"]["message"])
 
     def test_rejects_browser_origin(self):
@@ -155,6 +156,16 @@ class ServerTests(unittest.TestCase):
             {"role": "user", "content": "ping"}]})
         self.assertEqual(status, 502)
         self.assertEqual(data["error"]["code"], "provider_error")
+
+    @patch("llmrelay.api.find_cli", return_value="claude")
+    @patch("llmrelay.api.login_state", return_value="signed_out")
+    def test_missing_sign_in_returns_401(self, *_):
+        self.server.providers = {"codex": PROVIDERS["codex"]}
+        status, data = self.request("POST", "/v1/messages", {"provider": "claude",
+                              "messages": [{"role": "user", "content": "hello"}]})
+        self.assertEqual(status, 401)
+        self.assertEqual(data["error"]["type"], "authentication_error")
+        self.assertIn("login claude", data["error"]["message"])
 
 
 if __name__ == "__main__":

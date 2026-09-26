@@ -149,6 +149,8 @@ def generate(provider: Provider, prompt: str, model: str | None,
                 answer = item.get("text")
             if event.get("type") == "turn.failed":
                 raise classify_error("codex", str(event.get("error", {})))
+            if event.get("type") == "error":
+                raise classify_error("codex", str(event.get("message", "")))
             if event.get("type") == "turn.completed":
                 usage = event.get("usage", {})
         if not isinstance(answer, str):

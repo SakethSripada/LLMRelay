@@ -43,8 +43,9 @@ class RelayHandler(BaseHTTPRequestHandler):
         self.wfile.write(raw)
 
     def _error(self, error):
-        self._send(error.status, {"error": {"message": str(error), "type": error.code,
-                                            "code": error.code}})
+        detail = {"message": str(error), "type": error.code, "code": error.code}
+        data = {"type": "error", "error": detail} if self.path == "/v1/messages" else {"error": detail}
+        self._send(error.status, data)
 
     def do_GET(self):
         if self.path == "/health":
@@ -113,7 +114,7 @@ class RelayHandler(BaseHTTPRequestHandler):
 
 def main():
     if len(sys.argv) > 1 and sys.argv[1] in ("login", "status"):
-        command = argparse.ArgumentParser(prog=f"{sys.argv[0]} {sys.argv[1]}")
+        command = argparse.ArgumentParser(prog=f"llmrelay {sys.argv[1]}")
         if sys.argv[1] == "login":
             command.add_argument("provider", nargs="?", choices=("codex", "claude"))
             args = command.parse_args(sys.argv[2:])
