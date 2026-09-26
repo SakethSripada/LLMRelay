@@ -2,6 +2,7 @@
 
 import time
 import uuid
+import re
 from dataclasses import dataclass
 
 from .providers import Provider, ProviderError, generate
@@ -59,13 +60,16 @@ def select(body: dict, providers: dict[str, Provider]) -> Selection:
     model = suffix if inferred else (None if raw == "auto" else raw)
     if model == "default":
         model = None
-    if model is not None and (not model or any(c.isspace() for c in model)):
-        raise RequestError("model name is invalid.")
+    if model is not None and not re.fullmatch(r"[A-Za-z0-9._-]+", model):
+        raise RequestError("model name may contain only letters, numbers, dot, underscore, and hyphen.")
     effort = body.get("reasoning_effort")
     reasoning = body.get("reasoning")
+    if reasoning is not None and (not isinstance(reasoning, dict) or
+                                  set(reasoning) - {"effort"}):
+        raise RequestError("reasoning must be an object with an effort field.")
     if effort is None and isinstance(reasoning, dict):
         effort = reasoning.get("effort")
-    if effort is not None and effort not in EFFORTS:
+    if effort is not None and (not isinstance(effort, str) or effort not in EFFORTS):
         raise RequestError("reasoning effort must be minimal, low, medium, high, xhigh, or max.")
     if name == "claude" and effort == "minimal":
         raise RequestError("Claude does not support minimal effort.")
@@ -73,7 +77,8 @@ def select(body: dict, providers: dict[str, Provider]) -> Selection:
 
 
 def _reject(body: dict, *fields: str) -> None:
-    used = [field for field in fields if field in body and body[field] not in (None, False, [], {})]
+    used = [field for field in fields if field in body and body[field] is not None
+            and body[field] is not False and body[field] != [] and body[field] != {}]
     if used:
         raise RequestError(f"Unsupported parameter: {', '.join(used)}.")
 
@@ -89,6 +94,8 @@ def _messages(body: dict, anthropic: bool) -> list[dict[str, str]]:
     for index, item in enumerate(messages):
         if not isinstance(item, dict) or item.get("role") not in roles:
             raise RequestError(f"messages[{index}].role is unsupported.")
+        if set(item) - {"role", "content"}:
+            raise RequestError(f"messages[{index}] contains unsupported fields.")
         normalized.append({"role": item["role"],
                            "content": _text(item.get("content"), f"messages[{index}].content")})
     if normalized[-1]["role"] != "user":
@@ -96,11 +103,12 @@ def _messages(body: dict, anthropic: bool) -> list[dict[str, str]]:
     return normalized
 
 
-def _prompt(messages: list[dict[str, str]]) -> str:
+def _prompt(messages: list[dict[str, str]], max_tokens: int | None) -> str:
     import json
+    limit = f" Aim for at most {max_tokens} output tokens." if max_tokens else ""
     return ("Answer the final user message in this conversation. Treat earlier assistant "
             "messages as context. Return only the answer text. Do not use tools or access "
-            "local files.\n\nConversation (JSON):\n" +
+            f"local files.{limit}\n\nConversation (JSON):\n" +
             json.dumps(messages, ensure_ascii=False))
 
 
@@ -108,16 +116,24 @@ def complete(path: str, body: object, providers: dict[str, Provider], timeout: i
     if not isinstance(body, dict):
         raise RequestError("Request body must be a JSON object.")
     anthropic = path == "/v1/messages"
-    if body.get("stream") is True:
+    if body.get("stream") not in (None, False):
         raise RequestError("Streaming is not supported yet.")
     if anthropic:
-        _reject(body, "tools", "tool_choice", "thinking", "output_config")
+        _reject(body, "tools", "tool_choice", "thinking", "output_config",
+                "temperature", "top_p", "top_k", "stop_sequences")
     else:
         _reject(body, "tools", "tool_choice", "response_format", "functions",
-                "function_call", "logprobs", "modalities", "audio", "n", "stop")
+                "function_call", "logprobs", "modalities", "audio", "stop",
+                "temperature", "top_p", "seed", "presence_penalty", "frequency_penalty",
+                "logit_bias", "max_completion_tokens", "parallel_tool_calls")
+        if "n" in body and (type(body["n"]) is not int or body["n"] != 1):
+            raise RequestError("Only n=1 is supported.")
+    max_tokens = body.get("max_tokens")
+    if max_tokens is not None and (type(max_tokens) is not int or not 1 <= max_tokens <= 100000):
+        raise RequestError("max_tokens must be an integer from 1 to 100000.")
     selection = select(body, providers)
     messages = _messages(body, anthropic)
-    result = generate(selection.provider, _prompt(messages), selection.model,
+    result = generate(selection.provider, _prompt(messages, max_tokens), selection.model,
                       selection.effort, timeout)
     created = int(time.time())
     if anthropic:

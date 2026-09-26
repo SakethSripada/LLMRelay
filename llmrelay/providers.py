@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -35,8 +36,30 @@ def find_cli(name: str) -> str | None:
 
 
 def available() -> dict[str, Provider]:
-    return {name: Provider(name, command) for name in ("codex", "claude")
-            if (command := find_cli(name))}
+    found = {}
+    for name in ("codex", "claude"):
+        command = find_cli(name)
+        if command and _subscription_login(name, command):
+            found[name] = Provider(name, command)
+    return found
+
+
+def _subscription_login(name: str, command: str) -> bool:
+    args = [command, "login", "status"] if name == "codex" else [command, "auth", "status"]
+    try:
+        status = subprocess.run(args, capture_output=True, text=True, encoding="utf-8",
+                                errors="replace", timeout=10, env=_clean_env(), check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if status.returncode:
+        return False
+    if name == "codex":
+        return "Logged in using ChatGPT" in (status.stdout + status.stderr)
+    try:
+        data = json.loads(status.stdout)
+    except json.JSONDecodeError:
+        return False
+    return data.get("loggedIn") is True and data.get("authMethod") == "claude.ai"
 
 
 def _clean_env() -> dict[str, str]:
@@ -44,18 +67,20 @@ def _clean_env() -> dict[str, str]:
     # Prevent an ambient API key or cloud provider setting from silently billing
     # an API account instead of the account signed in through the CLI.
     for key in ("OPENAI_API_KEY", "CODEX_API_KEY", "ANTHROPIC_API_KEY",
-                "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK",
-                "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"):
+                "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
+                "ANTHROPIC_BEDROCK_BASE_URL", "ANTHROPIC_VERTEX_BASE_URL",
+                "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
+                "CLAUDE_CODE_USE_FOUNDRY"):
         env.pop(key, None)
     return env
 
 
 def _run(args: list[str], prompt: str, timeout: int) -> str:
     try:
-        result = subprocess.run(args, input=prompt, text=True, encoding="utf-8",
-                                errors="replace", capture_output=True, timeout=timeout,
-                                cwd=Path(__file__).resolve().parent.parent, env=_clean_env(),
-                                shell=False, check=False)
+        with tempfile.TemporaryDirectory(prefix="llmrelay-") as working_dir:
+            result = subprocess.run(args, input=prompt, text=True, encoding="utf-8",
+                                    errors="replace", capture_output=True, timeout=timeout,
+                                    cwd=working_dir, env=_clean_env(), shell=False, check=False)
     except subprocess.TimeoutExpired as exc:
         raise ProviderError(f"Provider timed out after {timeout} seconds.", 504, "timeout") from exc
     except OSError as exc:
@@ -104,6 +129,7 @@ def generate(provider: Provider, prompt: str, model: str | None,
         args += ["--model", model]
     if effort:
         args += ["--effort", effort]
+    args += ["Answer the conversation supplied on stdin."]
     output = _run(args, prompt, timeout)
     try:
         data = json.loads(output)

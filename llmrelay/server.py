@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import threading
+import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .api import MAX_BODY, RequestError, complete
@@ -85,6 +86,12 @@ class RelayHandler(BaseHTTPRequestHandler):
             self._error(exc)
         except (BrokenPipeError, ConnectionResetError):
             pass
+        except Exception:
+            traceback.print_exc()
+            try:
+                self._error(RequestError("Internal relay error.", 500, "internal_error"))
+            except (BrokenPipeError, ConnectionResetError):
+                pass
         finally:
             self.server.slots.release()
 
