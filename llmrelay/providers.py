@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -36,30 +37,42 @@ def find_cli(name: str) -> str | None:
 
 
 def available() -> dict[str, Provider]:
-    found = {}
-    for name in ("codex", "claude"):
-        command = find_cli(name)
-        if command and _subscription_login(name, command):
-            found[name] = Provider(name, command)
-    return found
+    return {name: Provider(name, command) for name in ("codex", "claude")
+            if (command := find_cli(name)) and login_state(name, command) == "subscription"}
 
 
-def _subscription_login(name: str, command: str) -> bool:
+def login_state(name: str, command: str) -> str:
+    """Return subscription, api_key, signed_out, or unknown without exposing credentials."""
     args = [command, "login", "status"] if name == "codex" else [command, "auth", "status"]
     try:
         status = subprocess.run(args, capture_output=True, text=True, encoding="utf-8",
                                 errors="replace", timeout=10, env=_clean_env(), check=False)
     except (OSError, subprocess.TimeoutExpired):
-        return False
+        return "unknown"
     if status.returncode:
-        return False
+        return "signed_out"
     if name == "codex":
-        return "Logged in using ChatGPT" in (status.stdout + status.stderr)
+        output = status.stdout + status.stderr
+        if "Logged in using ChatGPT" in output:
+            return "subscription"
+        if "API key" in output or "api key" in output:
+            return "api_key"
+        return "unknown"
     try:
         data = json.loads(status.stdout)
     except json.JSONDecodeError:
-        return False
-    return data.get("loggedIn") is True and data.get("authMethod") == "claude.ai"
+        return "unknown"
+    if data.get("loggedIn") is not True:
+        return "signed_out"
+    if data.get("authMethod") == "claude.ai":
+        return "subscription"
+    if data.get("authMethod") in ("apiKey", "console"):
+        return "api_key"
+    return "unknown"
+
+
+def _subscription_login(name: str, command: str) -> bool:
+    return login_state(name, command) == "subscription"
 
 
 def _clean_env() -> dict[str, str]:
@@ -86,12 +99,31 @@ def _run(args: list[str], prompt: str, timeout: int) -> str:
     except OSError as exc:
         raise ProviderError(f"Could not start provider CLI: {exc}", 503, "provider_unavailable") from exc
     if result.returncode:
-        # CLI stderr may contain prompt fragments or local paths. Keep the API
-        # error short and avoid echoing provider logs to unrelated callers.
-        detail = (result.stderr or result.stdout).strip().splitlines()
-        last = detail[-1][:300] if detail else f"exit code {result.returncode}"
-        raise ProviderError(f"{Path(args[0]).stem} failed: {last}")
+        name = Path(args[0]).stem
+        if login_state(name, args[0]) in ("signed_out", "api_key"):
+            raise ProviderError(f"{name} subscription sign-in is required. Run: "
+                                f"python -m llmrelay login {name}", 401, "authentication_error")
+        raise classify_error(name, result.stderr + "\n" + result.stdout)
     return result.stdout
+
+
+def classify_error(name: str, detail: str) -> ProviderError:
+    """Map known CLI failures to stable HTTP errors; do not return raw CLI logs."""
+    lowered = detail.lower()
+    login = f"python -m llmrelay login {name}"
+    if re.search(r"\b(401|unauthorized|unauthenticated|not logged in|login required)\b|auth(?:entication)? failed|authentication_error|oauth.*expir|session.*expir|token.*expir|invalid api key|no credentials", lowered):
+        return ProviderError(f"{name} sign-in expired or was rejected. Run: {login}",
+                             401, "authentication_error")
+    if re.search(r"\b(429|rate limit|usage limit|quota|capacity limit|too many requests|monthly spend limit|daily limit)\b|you.ve hit.*limit", lowered):
+        return ProviderError(f"{name} usage limit reached. Retry after the provider limit resets.",
+                             429, "rate_limit_error")
+    if re.search(r"(invalid|unknown|unsupported|unavailable|not found) model|model (.* )(invalid|unknown|unavailable|not found)", lowered):
+        return ProviderError(f"{name} rejected the requested model. Choose a model available to your account.",
+                             400, "invalid_model")
+    if re.search(r"econnreset|enotfound|connection refused|connection timed out|network error", lowered):
+        return ProviderError(f"{name} could not reach its provider service. Check your network and retry.",
+                             503, "provider_unavailable")
+    return ProviderError(f"{name} CLI failed. Run the CLI directly to inspect its error.")
 
 
 def generate(provider: Provider, prompt: str, model: str | None,
@@ -116,7 +148,7 @@ def generate(provider: Provider, prompt: str, model: str | None,
             if event.get("type") == "item.completed" and item.get("type") == "agent_message":
                 answer = item.get("text")
             if event.get("type") == "turn.failed":
-                raise ProviderError("Codex reported a failed turn.")
+                raise classify_error("codex", str(event.get("error", {})))
             if event.get("type") == "turn.completed":
                 usage = event.get("usage", {})
         if not isinstance(answer, str):
@@ -135,7 +167,10 @@ def generate(provider: Provider, prompt: str, model: str | None,
         data = json.loads(output)
     except json.JSONDecodeError as exc:
         raise ProviderError("Claude returned invalid JSON.") from exc
-    if data.get("is_error") or not isinstance(data.get("result"), str):
-        raise ProviderError("Claude returned an error or no final message.")
+    if data.get("is_error"):
+        raise classify_error("claude", str(data.get("result", "")) + " " +
+                             str(data.get("api_error_status", "")))
+    if not isinstance(data.get("result"), str):
+        raise ProviderError("Claude returned no final message.")
     usage = data.get("usage") or {}
     return Result(data["result"], usage.get("input_tokens"), usage.get("output_tokens"))

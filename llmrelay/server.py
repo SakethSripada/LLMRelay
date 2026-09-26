@@ -3,11 +3,13 @@
 import argparse
 import json
 import os
+import sys
 import threading
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .api import MAX_BODY, RequestError, complete
+from .auth import first_run_sign_in, sign_in, status_lines
 from .providers import ProviderError, available
 
 
@@ -110,6 +112,18 @@ class RelayHandler(BaseHTTPRequestHandler):
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] in ("login", "status"):
+        command = argparse.ArgumentParser(prog=f"{sys.argv[0]} {sys.argv[1]}")
+        if sys.argv[1] == "login":
+            command.add_argument("provider", nargs="?", choices=("codex", "claude"))
+            args = command.parse_args(sys.argv[2:])
+            if not sign_in(args.provider):
+                raise SystemExit(1)
+        else:
+            command.parse_args(sys.argv[2:])
+            for line in status_lines():
+                print(line)
+        return
     parser = argparse.ArgumentParser(description="Local API backed by Codex or Claude CLI")
     parser.add_argument("--port", type=int, default=int(os.getenv("LLMRELAY_PORT", "8765")))
     parser.add_argument("--timeout", type=int, default=120, help="CLI timeout in seconds")
@@ -119,7 +133,10 @@ def main():
         parser.error("port, timeout, and concurrency must be positive and valid")
     providers = available()
     if not providers:
-        parser.error("Install and sign in to Codex CLI and/or Claude Code CLI first.")
+        if first_run_sign_in():
+            providers = available()
+        if not providers:
+            parser.error("No subscription is ready. Use python -m llmrelay login codex|claude.")
     try:
         server = RelayServer(("127.0.0.1", args.port), providers,
                              args.timeout, args.concurrency)

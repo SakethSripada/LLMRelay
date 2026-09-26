@@ -5,7 +5,8 @@ import unittest
 from unittest.mock import patch
 
 from llmrelay.api import RequestError, complete, select
-from llmrelay.providers import Provider, ProviderError, Result, _subscription_login, generate
+from llmrelay.providers import (Provider, ProviderError, Result, _subscription_login,
+                                classify_error, generate, login_state)
 from llmrelay.server import RelayServer
 
 
@@ -27,9 +28,17 @@ class RoutingTests(unittest.TestCase):
             select({"model": "codex/gpt&calc"}, PROVIDERS)
         with self.assertRaises(RequestError):
             select({"reasoning_effort": {}}, PROVIDERS)
-        with self.assertRaises(RequestError) as context:
+        with patch("llmrelay.api.find_cli", return_value=None), self.assertRaises(RequestError) as context:
             select({"provider": "claude"}, {"codex": PROVIDERS["codex"]})
         self.assertEqual(context.exception.status, 503)
+
+    @patch("llmrelay.api.find_cli", return_value="claude")
+    @patch("llmrelay.api.login_state", return_value="signed_out")
+    def test_unauthed_provider_gives_sign_in_command(self, *_):
+        with self.assertRaises(RequestError) as context:
+            select({"provider": "claude"}, {"codex": PROVIDERS["codex"]})
+        self.assertEqual(context.exception.status, 401)
+        self.assertIn("login claude", str(context.exception))
 
     @patch("llmrelay.api.generate", return_value=Result("Hello", 12, 3))
     def test_openai_and_anthropic_shapes(self, mock_generate):
@@ -75,6 +84,24 @@ class RoutingTests(unittest.TestCase):
         self.assertFalse(_subscription_login("claude", "claude"))
         run.return_value.stdout = '{"loggedIn":true,"authMethod":"claude.ai"}'
         self.assertTrue(_subscription_login("claude", "claude"))
+
+    def test_cli_failure_categories(self):
+        cases = [("OAuth session expired", 401, "authentication_error"),
+                 ("429 rate limit exceeded", 429, "rate_limit_error"),
+                 ("invalid model", 400, "invalid_model"),
+                 ("connection refused", 503, "provider_unavailable"),
+                 ("unexpected failure", 502, "provider_error")]
+        for message, status, code in cases:
+            with self.subTest(message=message):
+                error = classify_error("claude", message)
+                self.assertEqual((error.status, error.code), (status, code))
+
+    @patch("llmrelay.providers.subprocess.run")
+    def test_auth_status_from_codex_stderr(self, run):
+        run.return_value.returncode = 0
+        run.return_value.stdout = ""
+        run.return_value.stderr = "Logged in using ChatGPT"
+        self.assertEqual(login_state("codex", "codex"), "subscription")
 
 
 class ServerTests(unittest.TestCase):

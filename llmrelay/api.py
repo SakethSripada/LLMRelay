@@ -5,7 +5,7 @@ import uuid
 import re
 from dataclasses import dataclass
 
-from .providers import Provider, ProviderError, generate
+from .providers import Provider, ProviderError, find_cli, generate, login_state
 
 
 MAX_BODY = 1_048_576
@@ -54,9 +54,22 @@ def select(body: dict, providers: dict[str, Provider]) -> Selection:
         name = "codex"
     if not name:
         name = "codex" if "codex" in providers else "claude"
-    if name not in providers:
-        raise RequestError(f"{name} CLI is not installed. Install it and sign in first.", 503,
-                           "provider_unavailable")
+    provider = providers.get(name)
+    if provider is None:
+        command = find_cli(name)
+        if not command:
+            raise RequestError(f"{name} CLI is not installed. Install it and sign in first.",
+                               503, "provider_unavailable")
+        state = login_state(name, command)
+        if state == "unknown":
+            raise RequestError(f"Could not determine {name} sign-in status. Run: "
+                               f"python -m llmrelay status", 503, "provider_unavailable")
+        if state != "subscription":
+            raise RequestError(f"{name} subscription sign-in is required. Run: "
+                               f"python -m llmrelay login {name}", 401,
+                               "authentication_error")
+        provider = Provider(name, command)
+        providers[name] = provider
     model = suffix if inferred else (None if raw == "auto" else raw)
     if model == "default":
         model = None
@@ -73,7 +86,7 @@ def select(body: dict, providers: dict[str, Provider]) -> Selection:
         raise RequestError("reasoning effort must be minimal, low, medium, high, xhigh, or max.")
     if name == "claude" and effort == "minimal":
         raise RequestError("Claude does not support minimal effort.")
-    return Selection(providers[name], model, f"{name}/{model or 'default'}", effort)
+    return Selection(provider, model, f"{name}/{model or 'default'}", effort)
 
 
 def _reject(body: dict, *fields: str) -> None:
