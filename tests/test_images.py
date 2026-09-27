@@ -59,12 +59,12 @@ class VisionTests(unittest.TestCase):
                 {"role": "user", "content": "And now?"}]}, PROVIDERS, 10)
         self.assertIn("final user message", str(context.exception))
 
-    def test_rejects_more_than_four_images(self):
+    def test_rejects_more_than_twenty_images(self):
         with self.assertRaises(RequestError) as context:
             complete("/v1/responses", {"input": [{"role": "user", "content": [
-                {"type": "input_image", "image_url": URL} for _ in range(5)]}]},
+                {"type": "input_image", "image_url": URL} for _ in range(21)]}]},
                 PROVIDERS, 10)
-        self.assertIn("At most 4 images", str(context.exception))
+        self.assertIn("At most 20 images", str(context.exception))
 
     @patch("llmrelay.providers.subprocess.run")
     def test_staged_file_is_only_present_during_cli_call(self, run):

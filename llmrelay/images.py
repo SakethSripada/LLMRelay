@@ -6,9 +6,9 @@ import re
 from dataclasses import dataclass
 
 
-MAX_IMAGES = 4
+MAX_IMAGES = 20
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
-MAX_TOTAL_IMAGE_BYTES = 8 * 1024 * 1024
+MAX_TOTAL_IMAGE_BYTES = 20 * 1024 * 1024
 
 FORMATS = {
     "image/png": ".png",
@@ -71,4 +71,4 @@ def check_image_budget(images: list[ImageInput]) -> None:
     if len(images) > MAX_IMAGES:
         raise ImageError(f"At most {MAX_IMAGES} images are allowed per request.")
     if sum(len(image.data) for image in images) > MAX_TOTAL_IMAGE_BYTES:
-        raise ImageError("Images exceed the 8 MiB total limit.")
+        raise ImageError("Images exceed the 20 MiB total limit.")

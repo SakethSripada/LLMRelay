@@ -53,6 +53,22 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(response["output"][0]["content"][0]["text"], "Hello")
         self.assertEqual(mock_generate.call_count, 3)
 
+    @patch("llmrelay.api.generate", return_value=Result('{"answer":"yes"}', 12, 3))
+    def test_responses_json_schema_is_forwarded_as_instruction(self, mock_generate):
+        response = complete("/v1/responses", {"model": "auto", "reasoning": {"effort": "none"},
+            "input": "Answer", "text": {"verbosity": "low", "format": {"type": "json_schema",
+            "name": "Answer", "strict": True, "schema": {"type": "object", "properties":
+            {"answer": {"type": "string"}}, "required": ["answer"]}}}}, PROVIDERS, 10)
+        self.assertEqual(response["output_text"], '{"answer":"yes"}')
+        self.assertIn('"required":["answer"]', mock_generate.call_args.args[1])
+        self.assertIsNone(mock_generate.call_args.args[3])
+
+    @patch("llmrelay.api.generate", return_value=Result("{}"))
+    def test_responses_json_object(self, mock_generate):
+        complete("/v1/responses", {"input": "Answer", "text": {"format":
+            {"type": "json_object"}}}, PROVIDERS, 10)
+        self.assertIn("valid JSON object", mock_generate.call_args.args[1])
+
     def test_unsupported_input_fails_before_cli_call(self):
         for body in ({"stream": True, "messages": [{"role": "user", "content": "Hi"}]},
                      {"messages": [{"role": "user", "content": [{"type": "image_url"}]}]},
@@ -150,6 +166,20 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(response.status, 403)
         response.read()
         connection.close()
+
+    @patch("llmrelay.api.generate", return_value=Result("ok"))
+    def test_optional_bearer_token(self, generate):
+        self.server.api_key = "relay-test-token"
+        status, data = self.request("POST", "/v1/responses", {"input": "hello"})
+        self.assertEqual((status, data["error"]["code"]), (401, "authentication_error"))
+        connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=3)
+        connection.request("POST", "/v1/responses", body='{"input":"hello"}', headers={
+            "Content-Type": "application/json", "Authorization": "Bearer relay-test-token"})
+        response = connection.getresponse()
+        self.assertEqual(response.status, 200)
+        response.read()
+        connection.close()
+        self.assertEqual(generate.call_count, 1)
 
     @patch("llmrelay.api.generate", side_effect=ProviderError("provider unavailable"))
     def test_provider_failure_is_json(self, _):

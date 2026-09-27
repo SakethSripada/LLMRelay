@@ -1,6 +1,7 @@
 """Loopback HTTP server with bounded requests and predictable JSON errors."""
 
 import argparse
+import hmac
 import json
 import os
 import sys
@@ -17,11 +18,12 @@ class RelayServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address, providers, timeout: int, concurrency: int):
+    def __init__(self, address, providers, timeout: int, concurrency: int, api_key: str = ""):
         super().__init__(address, RelayHandler)
         self.providers = providers
         self.timeout = timeout
         self.slots = threading.BoundedSemaphore(concurrency)
+        self.api_key = api_key
 
 
 class RelayHandler(BaseHTTPRequestHandler):
@@ -67,6 +69,13 @@ class RelayHandler(BaseHTTPRequestHandler):
             self._error(RequestError("Endpoint not found.", 404, "not_found"))
             self.close_connection = True
             return
+        if self.server.api_key and not hmac.compare_digest(
+            self.headers.get("Authorization", ""), f"Bearer {self.server.api_key}"
+        ):
+            self._error(RequestError("A valid bearer token is required.", 401,
+                                     "authentication_error"))
+            self.close_connection = True
+            return
         origin = self.headers.get("Origin")
         if origin and origin not in (f"http://127.0.0.1:{self.server.server_port}",
                                      f"http://localhost:{self.server.server_port}"):
@@ -88,7 +97,7 @@ class RelayHandler(BaseHTTPRequestHandler):
             self.close_connection = True
             return
         if length < 0 or length > MAX_BODY:
-            self._error(RequestError("Request body exceeds 12 MiB.", 413))
+            self._error(RequestError("Request body exceeds 32 MiB.", 413))
             self.close_connection = True
             return
         if not self.server.slots.acquire(blocking=False):
@@ -134,11 +143,16 @@ def main():
         return
     parser = argparse.ArgumentParser(description="Local API backed by Codex or Claude CLI")
     parser.add_argument("--port", type=int, default=int(os.getenv("LLMRELAY_PORT", "8765")))
+    parser.add_argument("--host", default="127.0.0.1", help="bind address; non-loopback requires --api-key")
+    parser.add_argument("--api-key", default=os.getenv("LLMRELAY_API_KEY", ""),
+                        help="bearer token required for HTTP requests")
     parser.add_argument("--timeout", type=int, default=120, help="CLI timeout in seconds")
     parser.add_argument("--concurrency", type=int, default=2)
     args = parser.parse_args()
     if not 1 <= args.port <= 65535 or args.timeout < 1 or args.concurrency < 1:
         parser.error("port, timeout, and concurrency must be positive and valid")
+    if args.host not in ("127.0.0.1", "localhost", "::1") and not args.api_key:
+        parser.error("A non-loopback bind requires --api-key or LLMRELAY_API_KEY")
     providers = available()
     if not providers:
         if first_run_sign_in():
@@ -146,11 +160,11 @@ def main():
         if not providers:
             parser.error("No subscription is ready. Use python -m llmrelay login codex|claude.")
     try:
-        server = RelayServer(("127.0.0.1", args.port), providers,
-                             args.timeout, args.concurrency)
+        server = RelayServer((args.host, args.port), providers,
+                             args.timeout, args.concurrency, args.api_key)
     except OSError as exc:
-        parser.error(f"Could not bind to 127.0.0.1:{args.port}: {exc}")
-    print(f"LLMRelay: http://127.0.0.1:{args.port}/v1", flush=True)
+        parser.error(f"Could not bind to {args.host}:{args.port}: {exc}")
+    print(f"LLMRelay: http://{args.host}:{args.port}/v1", flush=True)
     print(f"Available: {', '.join(providers)} | default: "
           f"{'codex' if 'codex' in providers else 'claude'}", flush=True)
     print("OpenAI: /v1/chat/completions, /v1/responses | Anthropic: /v1/messages", flush=True)

@@ -1,5 +1,6 @@
 """Request validation and the deliberately small compatibility surface."""
 
+import json
 import time
 import uuid
 import re
@@ -9,9 +10,9 @@ from .images import ImageError, ImageInput, check_image_budget, decode_image, fr
 from .providers import Provider, ProviderError, find_cli, generate, login_state
 
 
-MAX_BODY = 12 * 1024 * 1024
+MAX_BODY = 32 * 1024 * 1024
 MAX_PROMPT_BYTES = 1024 * 1024
-EFFORTS = {"minimal", "low", "medium", "high", "xhigh", "max"}
+EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 
 
 class RequestError(Exception):
@@ -61,8 +62,8 @@ def _content(value: object, field: str, style: str, allow_images: bool,
         detail = block.get("detail")
         if style == "chat" and isinstance(block.get("image_url"), dict):
             detail = block["image_url"].get("detail", detail)
-        if detail not in (None, "auto"):
-            raise RequestError("Image detail controls are unsupported; use auto.")
+        if detail not in (None, "auto", "low", "high"):
+            raise RequestError("Image detail must be auto, low, or high.")
         try:
             if style == "anthropic":
                 source = block.get("source")
@@ -129,10 +130,33 @@ def select(body: dict, providers: dict[str, Provider]) -> Selection:
     if effort is None and isinstance(reasoning, dict):
         effort = reasoning.get("effort")
     if effort is not None and (not isinstance(effort, str) or effort not in EFFORTS):
-        raise RequestError("reasoning effort must be minimal, low, medium, high, xhigh, or max.")
+        raise RequestError("reasoning effort must be none, minimal, low, medium, high, xhigh, or max.")
     if name == "claude" and effort == "minimal":
         raise RequestError("Claude does not support minimal effort.")
-    return Selection(provider, model, f"{name}/{model or 'default'}", effort)
+    return Selection(provider, model, f"{name}/{model or 'default'}", None if effort == "none" else effort)
+
+
+def _response_format(body: dict) -> str:
+    text = body.get("text")
+    if text is None:
+        return ""
+    if not isinstance(text, dict) or set(text) - {"format", "verbosity"}:
+        raise RequestError("text must contain only format and verbosity.")
+    if text.get("verbosity") not in (None, "low", "medium", "high"):
+        raise RequestError("text.verbosity must be low, medium, or high.")
+    fmt = text.get("format")
+    if fmt is None or fmt == {"type": "text"}:
+        return ""
+    if not isinstance(fmt, dict):
+        raise RequestError("text.format must be an object.")
+    if fmt.get("type") == "json_object" and set(fmt) == {"type"}:
+        return "Return only one valid JSON object, without Markdown fences or explanation."
+    if fmt.get("type") != "json_schema" or not isinstance(fmt.get("schema"), dict):
+        raise RequestError("text.format must be text, json_object, or json_schema with a schema.")
+    if set(fmt) - {"type", "name", "schema", "strict", "description"}:
+        raise RequestError("text.format has unsupported fields.")
+    return ("Return only one JSON value matching this JSON Schema exactly, without Markdown "
+            "fences or explanation. Schema: " + json.dumps(fmt["schema"], separators=(",", ":")))
 
 
 def _reject(body: dict, *fields: str) -> None:
@@ -215,7 +239,7 @@ def complete(path: str, body: object, providers: dict[str, Provider], timeout: i
         _reject(body, "tools", "tool_choice", "thinking", "output_config",
                 "temperature", "top_p", "top_k", "stop_sequences")
     elif responses:
-        _reject(body, "tools", "tool_choice", "text", "previous_response_id",
+        _reject(body, "tools", "tool_choice", "previous_response_id",
                 "parallel_tool_calls", "include", "temperature", "top_p", "metadata")
     else:
         _reject(body, "tools", "tool_choice", "response_format", "functions",
@@ -230,6 +254,10 @@ def complete(path: str, body: object, providers: dict[str, Provider], timeout: i
     selection = select(body, providers)
     messages, images = _response_messages(body) if responses else _messages(body, anthropic)
     prompt = _prompt(messages, max_tokens, bool(images))
+    if responses:
+        format_instruction = _response_format(body)
+        if format_instruction:
+            prompt += "\n\nOutput requirement: " + format_instruction
     if len(prompt.encode("utf-8")) > MAX_PROMPT_BYTES:
         raise RequestError("Text prompt exceeds 1 MiB.", 413)
     result = generate(selection.provider, prompt,
