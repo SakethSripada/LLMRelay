@@ -9,6 +9,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from .images import ImageInput
+
 
 class ProviderError(Exception):
     def __init__(self, message: str, status: int = 502, code: str = "provider_error"):
@@ -88,9 +90,21 @@ def _clean_env() -> dict[str, str]:
     return env
 
 
-def _run(args: list[str], prompt: str, timeout: int) -> str:
+def _run(args: list[str], prompt: str, timeout: int,
+         images: tuple[ImageInput, ...] | list[ImageInput] = (),
+         provider: str | None = None) -> str:
     try:
         with tempfile.TemporaryDirectory(prefix="llmrelay-") as working_dir:
+            paths = []
+            for index, image in enumerate(images, 1):
+                path = Path(working_dir) / f"image-{index}{image.suffix}"
+                path.write_bytes(image.data)
+                paths.append(path)
+            if paths and provider == "codex":
+                args = args[:-1] + [part for path in paths for part in ("--image", str(path))] + args[-1:]
+            elif paths and provider == "claude":
+                prompt += "\n\nStaged images (read these files only):\n" + "\n".join(
+                    f"[Image {index}] {path}" for index, path in enumerate(paths, 1))
             result = subprocess.run(args, input=prompt, text=True, encoding="utf-8",
                                     errors="replace", capture_output=True, timeout=timeout,
                                     cwd=working_dir, env=_clean_env(), shell=False, check=False)
@@ -120,6 +134,8 @@ def classify_error(name: str, detail: str) -> ProviderError:
     if re.search(r"(invalid|unknown|unsupported|unavailable|not found) model|model (.* )(invalid|unknown|unavailable|not found)", lowered):
         return ProviderError(f"{name} rejected the requested model. Choose a model available to your account.",
                              400, "invalid_model")
+    if re.search(r"(invalid|unsupported|corrupt|unreadable) image|image (.* )(invalid|unsupported|corrupt|unreadable)", lowered):
+        return ProviderError(f"{name} could not read the supplied image.", 400, "invalid_image")
     if re.search(r"econnreset|enotfound|connection refused|connection timed out|network error", lowered):
         return ProviderError(f"{name} could not reach its provider service. Check your network and retry.",
                              503, "provider_unavailable")
@@ -127,7 +143,8 @@ def classify_error(name: str, detail: str) -> ProviderError:
 
 
 def generate(provider: Provider, prompt: str, model: str | None,
-             effort: str | None, timeout: int) -> Result:
+             effort: str | None, timeout: int,
+             images: tuple[ImageInput, ...] | list[ImageInput] = ()) -> Result:
     if provider.name == "codex":
         args = [provider.command, "exec", "--json", "--sandbox", "read-only",
                 "--skip-git-repo-check", "--ephemeral", "--ignore-user-config"]
@@ -136,7 +153,7 @@ def generate(provider: Provider, prompt: str, model: str | None,
         if effort:
             args += ["-c", f'model_reasoning_effort="{effort}"']
         args += ["-"]
-        output = _run(args, prompt, timeout)
+        output = _run(args, prompt, timeout, images, "codex")
         answer = None
         usage = {}
         for line in output.splitlines():
@@ -157,14 +174,19 @@ def generate(provider: Provider, prompt: str, model: str | None,
             raise ProviderError("Codex returned no final message.")
         return Result(answer, usage.get("input_tokens"), usage.get("output_tokens"))
 
-    args = [provider.command, "-p", "--output-format", "json", "--tools", "",
-            "--disallowedTools", "mcp__*", "--no-session-persistence"]
+    args = [provider.command, "-p", "--output-format", "json"]
+    if images:
+        args += ["--restricted", "--tools", "Read", "--allowedTools", "Read",
+                 "--permission-mode", "dontAsk"]
+    else:
+        args += ["--tools", ""]
+    args += ["--disallowedTools", "mcp__*", "--no-session-persistence"]
     if model:
         args += ["--model", model]
     if effort:
         args += ["--effort", effort]
     args += ["Answer the conversation supplied on stdin."]
-    output = _run(args, prompt, timeout)
+    output = _run(args, prompt, timeout, images, "claude")
     try:
         data = json.loads(output)
     except json.JSONDecodeError as exc:

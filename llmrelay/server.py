@@ -84,7 +84,7 @@ class RelayHandler(BaseHTTPRequestHandler):
             self.close_connection = True
             return
         if length < 0 or length > MAX_BODY:
-            self._error(RequestError("Request body exceeds 1 MiB.", 413))
+            self._error(RequestError("Request body exceeds 12 MiB.", 413))
             self.close_connection = True
             return
         if not self.server.slots.acquire(blocking=False):

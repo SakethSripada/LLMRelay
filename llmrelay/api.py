@@ -5,10 +5,12 @@ import uuid
 import re
 from dataclasses import dataclass
 
+from .images import ImageError, ImageInput, check_image_budget, decode_image, from_data_url
 from .providers import Provider, ProviderError, find_cli, generate, login_state
 
 
-MAX_BODY = 1_048_576
+MAX_BODY = 12 * 1024 * 1024
+MAX_PROMPT_BYTES = 1024 * 1024
 EFFORTS = {"minimal", "low", "medium", "high", "xhigh", "max"}
 
 
@@ -33,7 +35,51 @@ def _text(value: object, field: str) -> str:
     if isinstance(value, list) and all(isinstance(p, dict) and p.get("type") == "text"
                                        and isinstance(p.get("text"), str) for p in value):
         return "\n".join(p["text"] for p in value)
-    raise RequestError(f"{field} must contain text only; multimodal input is unsupported.")
+    raise RequestError(f"{field} must contain text blocks only.")
+
+
+def _content(value: object, field: str, style: str, allow_images: bool,
+             images: list[ImageInput]) -> str:
+    if isinstance(value, str):
+        return value
+    if not isinstance(value, list):
+        raise RequestError(f"{field} must be text or an array of content blocks.")
+    parts = []
+    for index, block in enumerate(value):
+        if not isinstance(block, dict):
+            raise RequestError(f"{field}[{index}] must be an object.")
+        kind = block.get("type")
+        text_types = {"input_text", "output_text", "text"} if style == "responses" else {"text"}
+        if kind in text_types and isinstance(block.get("text"), str):
+            parts.append(block["text"])
+            continue
+        image_type = {"chat": "image_url", "responses": "input_image", "anthropic": "image"}[style]
+        if kind != image_type:
+            raise RequestError(f"{field}[{index}] has an unsupported content type.")
+        if not allow_images:
+            raise RequestError("Images are supported only in the final user message.")
+        detail = block.get("detail")
+        if style == "chat" and isinstance(block.get("image_url"), dict):
+            detail = block["image_url"].get("detail", detail)
+        if detail not in (None, "auto"):
+            raise RequestError("Image detail controls are unsupported; use auto.")
+        try:
+            if style == "anthropic":
+                source = block.get("source")
+                if not isinstance(source, dict) or source.get("type") != "base64":
+                    raise ImageError("Anthropic images require a base64 source.")
+                image = decode_image(source.get("media_type"), source.get("data"))
+            else:
+                source = block.get("image_url")
+                if style == "chat":
+                    source = source.get("url") if isinstance(source, dict) else source
+                image = from_data_url(source)
+            images.append(image)
+            check_image_budget(images)
+        except ImageError as exc:
+            raise RequestError(f"{field}[{index}]: {exc}") from exc
+        parts.append(f"[Image {len(images)}]")
+    return "\n".join(parts)
 
 
 def select(body: dict, providers: dict[str, Provider]) -> Selection:
@@ -96,11 +142,12 @@ def _reject(body: dict, *fields: str) -> None:
         raise RequestError(f"Unsupported parameter: {', '.join(used)}.")
 
 
-def _messages(body: dict, anthropic: bool) -> list[dict[str, str]]:
+def _messages(body: dict, anthropic: bool) -> tuple[list[dict[str, str]], list[ImageInput]]:
     messages = body.get("messages")
     if not isinstance(messages, list) or not messages:
         raise RequestError("messages must be a nonempty array.")
     normalized = []
+    images = []
     if anthropic and "system" in body:
         normalized.append({"role": "system", "content": _text(body["system"], "system")})
     roles = {"user", "assistant"} if anthropic else {"system", "developer", "user", "assistant"}
@@ -110,23 +157,31 @@ def _messages(body: dict, anthropic: bool) -> list[dict[str, str]]:
         if set(item) - {"role", "content"}:
             raise RequestError(f"messages[{index}] contains unsupported fields.")
         normalized.append({"role": item["role"],
-                           "content": _text(item.get("content"), f"messages[{index}].content")})
+                           "content": _content(item.get("content"), f"messages[{index}].content",
+                                               "anthropic" if anthropic else "chat",
+                                               index == len(messages) - 1 and item["role"] == "user",
+                                               images)})
     if normalized[-1]["role"] != "user":
         raise RequestError("The last message must have role user.")
-    return normalized
+    return normalized, images
 
 
-def _prompt(messages: list[dict[str, str]], max_tokens: int | None) -> str:
+def _prompt(messages: list[dict[str, str]], max_tokens: int | None,
+            has_images: bool) -> str:
     import json
     limit = f" Aim for at most {max_tokens} output tokens." if max_tokens else ""
+    access = ("Use the supplied images. For Claude, read only the staged image paths "
+              "listed after the conversation." if has_images else
+              "Do not use tools or access local files.")
     return ("Answer the final user message in this conversation. Treat earlier assistant "
-            "messages as context. Return only the answer text. Do not use tools or access "
-            f"local files.{limit}\n\nConversation (JSON):\n" +
+            f"messages as context. Return only the answer text. {access}{limit}"
+            "\n\nConversation (JSON):\n" +
             json.dumps(messages, ensure_ascii=False))
 
 
-def _response_messages(body: dict) -> list[dict[str, str]]:
+def _response_messages(body: dict) -> tuple[list[dict[str, str]], list[ImageInput]]:
     messages = []
+    images = []
     instructions = body.get("instructions")
     if instructions is not None:
         if not isinstance(instructions, str):
@@ -135,25 +190,18 @@ def _response_messages(body: dict) -> list[dict[str, str]]:
     source = body.get("input")
     if isinstance(source, str):
         messages.append({"role": "user", "content": source})
-        return messages
+        return messages, images
     if not isinstance(source, list) or not source:
         raise RequestError("input must be text or a nonempty array of text messages.")
     for index, item in enumerate(source):
         if not isinstance(item, dict) or item.get("role") not in ("system", "developer", "user", "assistant"):
             raise RequestError(f"input[{index}].role is unsupported.")
-        content = item.get("content")
-        if isinstance(content, list):
-            allowed = {"input_text", "output_text", "text"}
-            if not all(isinstance(part, dict) and part.get("type") in allowed and
-                       isinstance(part.get("text"), str) for part in content):
-                raise RequestError(f"input[{index}].content must contain text blocks only.")
-            content = "\n".join(part["text"] for part in content)
-        if not isinstance(content, str):
-            raise RequestError(f"input[{index}].content must be text.")
+        content = _content(item.get("content"), f"input[{index}].content", "responses",
+                           index == len(source) - 1 and item["role"] == "user", images)
         messages.append({"role": item["role"], "content": content})
     if messages[-1]["role"] != "user":
         raise RequestError("The last input message must have role user.")
-    return messages
+    return messages, images
 
 
 def complete(path: str, body: object, providers: dict[str, Provider], timeout: int) -> dict:
@@ -180,9 +228,12 @@ def complete(path: str, body: object, providers: dict[str, Provider], timeout: i
     if max_tokens is not None and (type(max_tokens) is not int or not 1 <= max_tokens <= 100000):
         raise RequestError("Output token limit must be an integer from 1 to 100000.")
     selection = select(body, providers)
-    messages = _response_messages(body) if responses else _messages(body, anthropic)
-    result = generate(selection.provider, _prompt(messages, max_tokens), selection.model,
-                      selection.effort, timeout)
+    messages, images = _response_messages(body) if responses else _messages(body, anthropic)
+    prompt = _prompt(messages, max_tokens, bool(images))
+    if len(prompt.encode("utf-8")) > MAX_PROMPT_BYTES:
+        raise RequestError("Text prompt exceeds 1 MiB.", 413)
+    result = generate(selection.provider, prompt,
+                      selection.model, selection.effort, timeout, images)
     created = int(time.time())
     if anthropic:
         return {"id": f"msg_{uuid.uuid4().hex}", "type": "message", "role": "assistant",
