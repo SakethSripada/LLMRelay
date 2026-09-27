@@ -125,6 +125,10 @@ def classify_error(name: str, detail: str) -> ProviderError:
     """Map known CLI failures to stable HTTP errors; do not return raw CLI logs."""
     lowered = detail.lower()
     login = f"python -m llmrelay login {name}"
+    if name == "claude" and "--restricted" in lowered and re.search(
+            r"unknown|unrecognized|unexpected|unsupported", lowered):
+        return ProviderError("Claude Code is too old for restricted image reads. "
+                             "Update Claude Code and retry.", 503, "provider_unavailable")
     if re.search(r"\b(401|unauthorized|unauthenticated|not logged in|login required)\b|auth(?:entication)? failed|authentication_error|oauth.*expir|session.*expir|token.*expir|invalid api key|no credentials", lowered):
         return ProviderError(f"{name} sign-in expired or was rejected. Run: {login}",
                              401, "authentication_error")
@@ -134,7 +138,7 @@ def classify_error(name: str, detail: str) -> ProviderError:
     if re.search(r"(invalid|unknown|unsupported|unavailable|not found) model|model (.* )(invalid|unknown|unavailable|not found)", lowered):
         return ProviderError(f"{name} rejected the requested model. Choose a model available to your account.",
                              400, "invalid_model")
-    if re.search(r"(invalid|unsupported|corrupt|unreadable) image|image (.* )(invalid|unsupported|corrupt|unreadable)", lowered):
+    if re.search(r"(invalid|unsupported|corrupt|unreadable) image|image (.* )(invalid|unsupported|corrupt|unreadable)|failed to (decode|read|open) image", lowered):
         return ProviderError(f"{name} could not read the supplied image.", 400, "invalid_image")
     if re.search(r"econnreset|enotfound|connection refused|connection timed out|network error", lowered):
         return ProviderError(f"{name} could not reach its provider service. Check your network and retry.",

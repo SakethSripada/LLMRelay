@@ -28,6 +28,10 @@ class RelayHandler(BaseHTTPRequestHandler):
     server: RelayServer
     protocol_version = "HTTP/1.1"
 
+    def setup(self):
+        super().setup()
+        self.connection.settimeout(30)
+
     def log_message(self, format, *args):
         # Avoid logging prompts, auth headers, and provider output.
         print(f"{self.client_address[0]} {format % args}", flush=True)
@@ -100,6 +104,9 @@ class RelayHandler(BaseHTTPRequestHandler):
             self._send(200, data)
         except (RequestError, ProviderError) as exc:
             self._error(exc)
+        except TimeoutError:
+            self._error(RequestError("Timed out reading request body.", 408, "request_timeout"))
+            self.close_connection = True
         except (BrokenPipeError, ConnectionResetError):
             pass
         except Exception:

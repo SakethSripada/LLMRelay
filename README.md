@@ -36,7 +36,7 @@ curl http://127.0.0.1:8765/v1/messages \
 
 OpenAI Responses also accepts a text `input` at `POST /v1/responses`.
 
-Image input works in the final user message. Send a base64 `data:image/png;base64,...` URL in an OpenAI Chat `image_url` block or Responses `input_image` block. For Anthropic Messages, use an `image` block with a base64 `source`, `media_type`, and `data`. PNG, JPEG, WebP, and GIF are accepted. Remote image URLs and local file paths are not read; send the image bytes. Each request may include up to four images, 5 MiB per image and 8 MiB total. The full JSON body is limited to 12 MiB.
+Image input works in the final user message. Send a base64 `data:image/png;base64,...` URL in an OpenAI Chat `image_url` block or Responses `input_image` block. For Anthropic Messages, use an `image` block with a base64 `source`, `media_type`, and `data`. PNG, JPEG, WebP, and GIF are accepted; PNG is the safest choice across CLI versions. Remote image URLs and local file paths are not read; send the image bytes. Each request may include up to four images, 5 MiB per image and 8 MiB total. The full JSON body is limited to 12 MiB. Claude image input requires Claude Code 2.1.248 or newer for restricted file access.
 
 Point an OpenAI SDK's `base_url` at `http://127.0.0.1:8765/v1` and use any placeholder API key if the SDK requires one. Point an Anthropic SDK's `base_url` at `http://127.0.0.1:8765`. SDKs that require a model can use `auto`. LLMRelay does not authenticate HTTP requests because it only listens on loopback; do not expose the port through a tunnel or reverse proxy.
 

@@ -89,6 +89,7 @@ class RoutingTests(unittest.TestCase):
         cases = [("OAuth session expired", 401, "authentication_error"),
                  ("429 rate limit exceeded", 429, "rate_limit_error"),
                  ("invalid model", 400, "invalid_model"),
+                 ("failed to decode image", 400, "invalid_image"),
                  ("connection refused", 503, "provider_unavailable"),
                  ("unexpected failure", 502, "provider_error")]
         for message, status, code in cases:

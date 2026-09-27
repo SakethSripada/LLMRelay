@@ -1,5 +1,4 @@
 import base64
-import os
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -59,6 +58,13 @@ class VisionTests(unittest.TestCase):
                 {"role": "assistant", "content": "I see it"},
                 {"role": "user", "content": "And now?"}]}, PROVIDERS, 10)
         self.assertIn("final user message", str(context.exception))
+
+    def test_rejects_more_than_four_images(self):
+        with self.assertRaises(RequestError) as context:
+            complete("/v1/responses", {"input": [{"role": "user", "content": [
+                {"type": "input_image", "image_url": URL} for _ in range(5)]}]},
+                PROVIDERS, 10)
+        self.assertIn("At most 4 images", str(context.exception))
 
     @patch("llmrelay.providers.subprocess.run")
     def test_staged_file_is_only_present_during_cli_call(self, run):
