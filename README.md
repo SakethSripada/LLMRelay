@@ -36,6 +36,14 @@ curl http://127.0.0.1:8765/v1/messages \
 
 OpenAI Responses also accepts a text `input` at `POST /v1/responses`.
 
+Add `"stream":true` to stream text from either signed-in provider. This works on Chat Completions, Responses, and Anthropic Messages. The relay sends server-sent events in the format of the endpoint you call. For example:
+
+```sh
+curl -N http://127.0.0.1:8765/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"codex/default","stream":true,"messages":[{"role":"user","content":"Say hello"}]}'
+```
+
 Image input works in the final user message. Send a base64 `data:image/png;base64,...` URL in an OpenAI Chat `image_url` block or Responses `input_image` block. For Anthropic Messages, use an `image` block with a base64 `source`, `media_type`, and `data`. PNG, JPEG, WebP, and GIF are accepted; PNG is the safest choice across CLI versions. Remote image URLs and local file paths are not read; send the image bytes. Each request may include up to 20 images, 5 MiB per image and 20 MiB total. The full JSON body is limited to 32 MiB. Image detail values `auto`, `low`, and `high` are accepted but do not alter CLI image processing. Claude image input requires Claude Code 2.1.248 or newer for restricted file access.
 
 Point an OpenAI SDK's `base_url` at `http://127.0.0.1:8765/v1` and use any placeholder API key if the SDK requires one. Point an Anthropic SDK's `base_url` at `http://127.0.0.1:8765`. SDKs that require a model can use `auto`. The default loopback listener does not require authentication. Do not expose an unauthenticated listener through a tunnel or reverse proxy.
@@ -46,7 +54,9 @@ For a local container to reach the relay on its host, start with `LLMRELAY_API_K
 
 ## Scope
 
-This is a small adapter, not a full implementation of either API. Each request starts a fresh CLI process, so even short prompts incur CLI startup time and agent context usage. It accepts system, user, and assistant text messages, plus images in the last user message. Responses `text.format` supports `json_object` and `json_schema` through prompt instructions; unlike native constrained decoding, schema adherence is best effort and clients should validate the result. It does not support streaming, tools, or conversation IDs. Parameters that require those features return a JSON error. `max_tokens` and `max_output_tokens` are best-effort instructions to the CLI, not hard limits. Usage counts are taken from CLI output when present; a zero means that CLI did not report a count. Provider errors, timeouts, and busy limits return JSON errors with non-200 status codes.
+This is a small adapter, not a full implementation of either API. Each request starts a fresh CLI process, so even short prompts incur CLI startup time and agent context usage. It accepts system, user, and assistant text messages, plus images in the last user message. Responses `text.format` supports `json_object` and `json_schema` through prompt instructions; unlike native constrained decoding, schema adherence is best effort and clients should validate the result. It does not support tools or conversation IDs. Parameters that require those features return a JSON error. `max_tokens` and `max_output_tokens` are best-effort instructions to the CLI, not hard limits. Usage counts are taken from CLI output when present; a zero means that CLI did not report a count. Provider errors, timeouts, and busy limits return JSON errors with non-200 status codes. If a provider fails after streaming begins, the stream ends with an `error` event because HTTP status can no longer change.
+
+Streaming uses [Codex app-server](https://developers.openai.com/codex/app-server) or [Claude Code's partial-message stream](https://code.claude.com/docs/en/headless#stream-responses). Keep the vendor CLI current if streaming reports an unsupported option.
 
 The CLIs own authentication and usage accounting. LLMRelay clears common API-key environment variables before launching them and only enables CLIs that report a subscription login. Check your provider's current plan terms and limits. [OpenAI documents `codex exec` for scripted runs](https://learn.chatgpt.com/docs/developer-commands?surface=cli); [Anthropic currently says `claude -p` and third-party app usage draw from subscription limits](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan). This can change.
 
