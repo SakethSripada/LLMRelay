@@ -2,6 +2,7 @@
 
 import argparse
 import hmac
+import itertools
 import json
 import os
 import sys
@@ -9,9 +10,12 @@ import threading
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from .api import MAX_BODY, RequestError, complete
+from .api import MAX_BODY, RequestError, complete, prepare
 from .auth import first_run_sign_in, sign_in, status_lines
+from .claude_stream import stream_claude
+from .codex_stream import stream_codex
 from .providers import ProviderError, available
+from .streaming import chat_events, event, message_events, response_events
 
 
 class RelayServer(ThreadingHTTPServer):
@@ -52,6 +56,38 @@ class RelayHandler(BaseHTTPRequestHandler):
         detail = {"message": str(error), "type": error.code, "code": error.code}
         data = {"type": "error", "error": detail} if self.path == "/v1/messages" else {"error": detail}
         self._send(error.status, data)
+
+    def _stream(self, path, body):
+        prepared = prepare(path, body, self.server.providers)
+        selection = prepared.selection
+        backend = stream_codex if selection.provider.name == "codex" else stream_claude
+        source = backend(selection.provider, prepared.prompt, selection.model,
+                         selection.effort, self.server.timeout, prepared.images)
+        started = False
+        try:
+            first = next(source, None)
+            deltas = itertools.chain((first,), source) if first is not None else iter(())
+            formatter = (message_events if path == "/v1/messages" else
+                         response_events if path == "/v1/responses" else chat_events)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache, no-store")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            started = True
+            self.close_connection = True
+            for payload in formatter(deltas, selection.label):
+                self.wfile.write(payload)
+                self.wfile.flush()
+        except (RequestError, ProviderError) as exc:
+            if not started:
+                raise
+            detail = {"message": str(exc), "type": exc.code, "code": exc.code}
+            self.wfile.write(event({"type": "error", "error": detail}, "error"))
+            self.wfile.flush()
+        finally:
+            source.close()
 
     def do_GET(self):
         if self.path == "/health":
@@ -109,8 +145,11 @@ class RelayHandler(BaseHTTPRequestHandler):
                 body = json.loads(self.rfile.read(length))
             except (ValueError, UnicodeDecodeError):
                 raise RequestError("Invalid JSON request body.")
-            data = complete(self.path, body, self.server.providers, self.server.timeout)
-            self._send(200, data)
+            if isinstance(body, dict) and body.get("stream") is True:
+                self._stream(self.path, body)
+            else:
+                data = complete(self.path, body, self.server.providers, self.server.timeout)
+                self._send(200, data)
         except (RequestError, ProviderError) as exc:
             self._error(exc)
         except TimeoutError:

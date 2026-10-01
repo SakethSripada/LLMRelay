@@ -135,7 +135,7 @@ def classify_error(name: str, detail: str) -> ProviderError:
     if re.search(r"\b(429|rate limit|usage limit|quota|capacity limit|too many requests|monthly spend limit|daily limit)\b|you.ve hit.*limit", lowered):
         return ProviderError(f"{name} usage limit reached. Retry after the provider limit resets.",
                              429, "rate_limit_error")
-    if re.search(r"(invalid|unknown|unsupported|unavailable|not found) model|model (.* )(invalid|unknown|unavailable|not found)", lowered):
+    if re.search(r"(invalid|unknown|unsupported|unavailable|not found) model|model.{0,120}(invalid|unknown|unsupported|not supported|unavailable|not found)", lowered):
         return ProviderError(f"{name} rejected the requested model. Choose a model available to your account.",
                              400, "invalid_model")
     if re.search(r"(invalid|unsupported|corrupt|unreadable) image|image (.* )(invalid|unsupported|corrupt|unreadable)|failed to (decode|read|open) image", lowered):

@@ -30,6 +30,13 @@ class Selection:
     effort: str | None
 
 
+@dataclass(frozen=True)
+class Prepared:
+    selection: Selection
+    prompt: str
+    images: list[ImageInput]
+
+
 def _text(value: object, field: str) -> str:
     if isinstance(value, str):
         return value
@@ -228,13 +235,13 @@ def _response_messages(body: dict) -> tuple[list[dict[str, str]], list[ImageInpu
     return messages, images
 
 
-def complete(path: str, body: object, providers: dict[str, Provider], timeout: int) -> dict:
+def prepare(path: str, body: object, providers: dict[str, Provider]) -> Prepared:
     if not isinstance(body, dict):
         raise RequestError("Request body must be a JSON object.")
     anthropic = path == "/v1/messages"
     responses = path == "/v1/responses"
-    if body.get("stream") not in (None, False):
-        raise RequestError("Streaming is not supported yet.")
+    if "stream" in body and type(body["stream"]) is not bool:
+        raise RequestError("stream must be a boolean.")
     if anthropic:
         _reject(body, "tools", "tool_choice", "thinking", "output_config",
                 "temperature", "top_p", "top_k", "stop_sequences")
@@ -260,8 +267,18 @@ def complete(path: str, body: object, providers: dict[str, Provider], timeout: i
             prompt += "\n\nOutput requirement: " + format_instruction
     if len(prompt.encode("utf-8")) > MAX_PROMPT_BYTES:
         raise RequestError("Text prompt exceeds 1 MiB.", 413)
-    result = generate(selection.provider, prompt,
-                      selection.model, selection.effort, timeout, images)
+    return Prepared(selection, prompt, images)
+
+
+def complete(path: str, body: object, providers: dict[str, Provider], timeout: int) -> dict:
+    if isinstance(body, dict) and body.get("stream") is True:
+        raise RequestError("Streaming requests must use the streaming response path.")
+    prepared = prepare(path, body, providers)
+    selection = prepared.selection
+    anthropic = path == "/v1/messages"
+    responses = path == "/v1/responses"
+    result = generate(selection.provider, prepared.prompt,
+                      selection.model, selection.effort, timeout, prepared.images)
     created = int(time.time())
     if anthropic:
         return {"id": f"msg_{uuid.uuid4().hex}", "type": "message", "role": "assistant",
