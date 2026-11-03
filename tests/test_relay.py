@@ -4,7 +4,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from llmrelay.api import RequestError, complete, select
+from llmrelay.api import RequestError, complete, prepare, select
 from llmrelay.providers import (Provider, ProviderError, Result, _subscription_login,
                                 classify_error, codex_models, generate, login_state)
 from llmrelay.server import RelayServer
@@ -68,6 +68,18 @@ class RoutingTests(unittest.TestCase):
         complete("/v1/responses", {"input": "Answer", "text": {"format":
             {"type": "json_object"}}}, PROVIDERS, 10)
         self.assertIn("valid JSON object", mock_generate.call_args.args[1])
+
+    def test_system_messages_are_set_apart_for_the_cli_system_prompt(self):
+        prepared = prepare("/v1/chat/completions", {"messages": [
+            {"role": "system", "content": "You edit video."},
+            {"role": "user", "content": "Hi"}]}, PROVIDERS)
+        self.assertEqual(prepared.instructions, "You edit video.")
+        self.assertNotIn("You edit video.", prepared.chat)
+        self.assertIn("You edit video.", prepared.prompt)
+        bare = prepare("/v1/chat/completions", {"messages": [
+            {"role": "user", "content": "Hi"}]}, PROVIDERS)
+        self.assertIsNone(bare.instructions)
+        self.assertIsNone(bare.chat)
 
     def test_unsupported_input_fails_before_cli_call(self):
         for body in ({"stream": True, "messages": [{"role": "user", "content": "Hi"}]},

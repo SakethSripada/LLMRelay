@@ -61,8 +61,11 @@ class RelayHandler(BaseHTTPRequestHandler):
         prepared = prepare(path, body, self.server.providers)
         selection = prepared.selection
         backend = stream_codex if selection.provider.name == "codex" else stream_claude
-        source = backend(selection.provider, prepared.prompt, selection.model,
-                         selection.effort, self.server.timeout, prepared.images)
+        # The caller's system prompt goes in the CLI's own system slot, so the model answers
+        # as the caller set it up rather than as a coding agent.
+        source = backend(selection.provider, prepared.chat or prepared.prompt, selection.model,
+                         selection.effort, self.server.timeout, prepared.images,
+                         instructions=prepared.instructions)
         started = False
         try:
             first = next(source, None)

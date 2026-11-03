@@ -35,6 +35,11 @@ class Prepared:
     selection: Selection
     prompt: str
     images: list[ImageInput]
+    # The caller's system and developer messages, for a streaming backend to set as the
+    # CLI's own system prompt (in place of its coding-agent one), with `chat` the
+    # conversation without them. None when there are none.
+    instructions: str | None = None
+    chat: str | None = None
 
 
 def _text(value: object, field: str) -> str:
@@ -261,13 +266,18 @@ def prepare(path: str, body: object, providers: dict[str, Provider]) -> Prepared
     selection = select(body, providers)
     messages, images = _response_messages(body) if responses else _messages(body, anthropic)
     prompt = _prompt(messages, max_tokens, bool(images))
+    system = [message["content"] for message in messages if message["role"] in ("system", "developer")]
+    instructions = "\n\n".join(system) if system else None
+    chat = _prompt([message for message in messages if message["role"] not in ("system", "developer")],
+                   max_tokens, bool(images)) if system else None
     if responses:
         format_instruction = _response_format(body)
         if format_instruction:
             prompt += "\n\nOutput requirement: " + format_instruction
+            chat = chat and chat + "\n\nOutput requirement: " + format_instruction
     if len(prompt.encode("utf-8")) > MAX_PROMPT_BYTES:
         raise RequestError("Text prompt exceeds 1 MiB.", 413)
-    return Prepared(selection, prompt, images)
+    return Prepared(selection, prompt, images, instructions, chat)
 
 
 def complete(path: str, body: object, providers: dict[str, Provider], timeout: int) -> dict:

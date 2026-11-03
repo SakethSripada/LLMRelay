@@ -15,7 +15,8 @@ from .providers import Provider, ProviderError, _clean_env, classify_error
 
 
 def stream_claude(provider: Provider, prompt: str, model: str | None,
-                  effort: str | None, timeout: int, images: list[ImageInput]):
+                  effort: str | None, timeout: int, images: list[ImageInput],
+                  instructions: str | None = None):
     deadline = time.monotonic() + timeout
     with tempfile.TemporaryDirectory(prefix="llmrelay-") as directory:
         args = [provider.command, "-p", "--output-format", "stream-json", "--verbose",
@@ -37,6 +38,11 @@ def stream_claude(provider: Provider, prompt: str, model: str | None,
             args += ["--model", model]
         if effort:
             args += ["--effort", effort]
+        if instructions:
+            # A file, since a long system prompt would overrun the command line.
+            system = Path(directory) / "system.txt"
+            system.write_text(instructions, encoding="utf-8")
+            args += ["--system-prompt-file", str(system)]
         args += ["Answer the conversation supplied on stdin."]
         try:
             process = subprocess.Popen(
