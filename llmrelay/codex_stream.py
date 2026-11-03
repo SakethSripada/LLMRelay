@@ -59,7 +59,7 @@ def _stop_process(process):
 
 def stream_codex(provider: Provider, prompt: str, model: str | None,
                  effort: str | None, timeout: int,
-                 images: list[ImageInput], instructions: str | None = None):
+                 images: list[ImageInput]):
     """Yield final-answer text deltas; stop the CLI when the iterator closes."""
     deadline = time.monotonic() + timeout
     with tempfile.TemporaryDirectory(prefix="llmrelay-") as directory:
@@ -130,8 +130,6 @@ def stream_codex(provider: Provider, prompt: str, model: str | None,
                      "ephemeral": True, "serviceName": "llmrelay"}
             if model:
                 start["model"] = model
-            if instructions:
-                start["baseInstructions"] = instructions
             _send(process, "thread/start", 2, start)
             thread_id = reply(2).get("thread", {}).get("id")
             if not thread_id:

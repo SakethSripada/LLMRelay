@@ -35,9 +35,9 @@ class Prepared:
     selection: Selection
     prompt: str
     images: list[ImageInput]
-    # The caller's system and developer messages, for a streaming backend to set as the
-    # CLI's own system prompt (in place of its coding-agent one), with `chat` the
-    # conversation without them. None when there are none.
+    # The caller's system and developer messages, for Claude Code to take as its system
+    # prompt (in place of its coding-agent one), with `chat` the conversation without
+    # them. None when there are none.
     instructions: str | None = None
     chat: str | None = None
 

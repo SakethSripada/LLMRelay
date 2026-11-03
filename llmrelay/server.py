@@ -60,12 +60,16 @@ class RelayHandler(BaseHTTPRequestHandler):
     def _stream(self, path, body):
         prepared = prepare(path, body, self.server.providers)
         selection = prepared.selection
-        backend = stream_codex if selection.provider.name == "codex" else stream_claude
-        # The caller's system prompt goes in the CLI's own system slot, so the model answers
-        # as the caller set it up rather than as a coding agent.
-        source = backend(selection.provider, prepared.chat or prepared.prompt, selection.model,
-                         selection.effort, self.server.timeout, prepared.images,
-                         instructions=prepared.instructions)
+        if selection.provider.name == "codex":
+            # Codex keeps the caller's system prompt in the conversation: in its own system slot
+            # its sandbox notes outrank it, and models then refuse work the caller set them up for.
+            source = stream_codex(selection.provider, prepared.prompt, selection.model,
+                                  selection.effort, self.server.timeout, prepared.images)
+        else:
+            # Claude Code takes it as its system prompt, in place of its coding-agent one.
+            source = stream_claude(selection.provider, prepared.chat or prepared.prompt,
+                                   selection.model, selection.effort, self.server.timeout,
+                                   prepared.images, instructions=prepared.instructions)
         started = False
         try:
             first = next(source, None)
