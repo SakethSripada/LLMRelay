@@ -142,6 +142,7 @@ def stream_codex(provider: Provider, prompt: str, model: str | None,
             seen = {}
             phases = {}
             final_text = None
+            warnings: list[str] = []
             while True:
                 event = pending.pop(0) if pending else receive()
                 method = event.get("method")
@@ -161,6 +162,10 @@ def stream_codex(provider: Provider, prompt: str, model: str | None,
                         yield delta
                 elif method == "item/completed":
                     item = params.get("item") or {}
+                    if item.get("type") == "error":
+                        # Warnings the CLI raises on its way (a model it has no metadata for): kept to explain a
+                        # failed turn.
+                        warnings.append(str(item.get("message", "")))
                     if (item.get("type") == "agentMessage" and
                             item.get("phase") != "commentary" and
                             isinstance(item.get("text"), str)):
@@ -175,13 +180,15 @@ def stream_codex(provider: Provider, prompt: str, model: str | None,
                     turn_result = params.get("turn") or {}
                     if turn_result.get("status") != "completed":
                         detail = str((turn_result.get("error") or {}).get("message", "Codex turn failed."))
-                        raise classify_error("codex", detail)
+                        raise classify_error("codex", "\n".join([*warnings, detail]))
                     if final_text is None:
                         raise ProviderError("Codex returned no final message.")
                     return
                 elif method == "error":
                     detail = str((params.get("error") or {}).get("message", "Codex turn failed."))
-                    raise classify_error("codex", detail)
+                    raise classify_error("codex", "\n".join([*warnings, detail]))
+                elif "warning" in str(method).lower():
+                    warnings.append(json.dumps(params))
                 elif "id" in event and "method" in event:
                     process.stdin.write(json.dumps({"id": event["id"], "error": {
                         "code": -32601, "message": "LLMRelay does not handle server requests."}}) + "\n")

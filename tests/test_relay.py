@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from llmrelay.api import RequestError, complete, select
 from llmrelay.providers import (Provider, ProviderError, Result, _subscription_login,
-                                classify_error, generate, login_state)
+                                classify_error, codex_models, generate, login_state)
 from llmrelay.server import RelayServer
 
 
@@ -112,6 +112,27 @@ class RoutingTests(unittest.TestCase):
             with self.subTest(message=message):
                 error = classify_error("claude", message)
                 self.assertEqual((error.status, error.code), (status, code))
+
+    def test_old_codex_cli_is_told_to_update_for_new_models(self):
+        detail = ('{"type":"item.completed","item":{"type":"error","message":"Model metadata for `gpt-6-luna` not '
+                  'found. Defaulting to fallback metadata"}}\n{"type":"turn.failed","error":{"message":"The '
+                  "'gpt-6-luna' model is not supported when using Codex with a ChatGPT account.\"}}")
+        error = classify_error("codex", detail)
+        self.assertEqual((error.status, error.code), (400, "invalid_model"))
+        self.assertIn("npm install -g @openai/codex@latest", str(error))
+
+    def test_codex_models_come_from_the_cli_cache(self):
+        import os
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as home:
+            Path(home, "models_cache.json").write_text(json.dumps({"models": [
+                {"slug": "gpt-6-luna", "visibility": "list"}, {"slug": "gpt-6-sol", "visibility": "list"},
+                {"slug": "gpt-reserve", "visibility": "hide"}]}), encoding="utf-8")
+            with patch.dict(os.environ, {"CODEX_HOME": home}):
+                self.assertEqual(codex_models(), ["gpt-6-luna", "gpt-6-sol"])
+            with patch.dict(os.environ, {"CODEX_HOME": str(Path(home, "missing"))}):
+                self.assertEqual(codex_models(), [])
 
     @patch("llmrelay.providers.subprocess.run")
     def test_auth_status_from_codex_stderr(self, run):

@@ -14,7 +14,7 @@ from .api import MAX_BODY, RequestError, complete, prepare
 from .auth import first_run_sign_in, sign_in, status_lines
 from .claude_stream import stream_claude
 from .codex_stream import stream_codex
-from .providers import ProviderError, available
+from .providers import ProviderError, available, codex_models
 from .streaming import chat_events, event, message_events, response_events
 
 
@@ -96,6 +96,8 @@ class RelayHandler(BaseHTTPRequestHandler):
             models = [{"id": "auto", "object": "model", "owned_by": "llmrelay"}]
             models += [{"id": f"{name}/default", "object": "model", "owned_by": name}
                        for name in self.server.providers]
+            if "codex" in self.server.providers:
+                models += [{"id": f"codex/{slug}", "object": "model", "owned_by": "codex"} for slug in codex_models()]
             self._send(200, {"object": "list", "data": models})
         else:
             self._error(RequestError("Endpoint not found.", 404, "not_found"))

@@ -38,6 +38,19 @@ def find_cli(name: str) -> str | None:
     return next((path for candidate in names if (path := shutil.which(candidate))), None)
 
 
+def codex_models() -> list[str]:
+    """Models the signed-in Codex account offers, as the Codex CLI last fetched them (its models cache); empty when
+    the cache is missing or unreadable. Newer CLIs fetch newer families (gpt-6-*), so an old CLI lists old models."""
+    home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    try:
+        data = json.loads((home / "models_cache.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    models = data.get("models") if isinstance(data, dict) else None
+    return [entry["slug"] for entry in models or []
+            if isinstance(entry, dict) and isinstance(entry.get("slug"), str) and entry.get("visibility") == "list"]
+
+
 def available() -> dict[str, Provider]:
     return {name: Provider(name, command) for name in ("codex", "claude")
             if (command := find_cli(name)) and login_state(name, command) == "subscription"}
@@ -135,6 +148,9 @@ def classify_error(name: str, detail: str) -> ProviderError:
     if re.search(r"\b(429|rate limit|usage limit|quota|capacity limit|too many requests|monthly spend limit|daily limit)\b|you.ve hit.*limit", lowered):
         return ProviderError(f"{name} usage limit reached. Retry after the provider limit resets.",
                              429, "rate_limit_error")
+    if name == "codex" and re.search(r"model metadata for .{1,80} not found", lowered):
+        return ProviderError("codex CLI does not know the requested model yet. Update it "
+                             "(npm install -g @openai/codex@latest) and retry.", 400, "invalid_model")
     if re.search(r"(invalid|unknown|unsupported|unavailable|not found) model|model.{0,120}(invalid|unknown|unsupported|not supported|unavailable|not found)", lowered):
         return ProviderError(f"{name} rejected the requested model. Choose a model available to your account.",
                              400, "invalid_model")

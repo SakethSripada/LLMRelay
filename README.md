@@ -50,7 +50,7 @@ Point an OpenAI SDK's `base_url` at `http://127.0.0.1:8765/v1` and use any place
 
 For a local container to reach the relay on its host, start with `LLMRELAY_API_KEY=<random-secret> python -m llmrelay --host 0.0.0.0`. Point the container at `http://host.docker.internal:8765/v1` and send the same secret as a bearer token. A non-loopback bind requires a secret; keep that port confined to your trusted local network.
 
-`model` is optional. The default is the signed-in Codex CLI's default model, or Claude's if Codex is unavailable. Use `"model":"claude/sonnet"`, `"model":"codex/<model-name>"`, or `"provider":"claude"` to route explicitly. Unprefixed `claude-*` and `gpt-*` names also route to the matching CLI. Set `"reasoning_effort":"low"` (or `"reasoning":{"effort":"low"}`) to choose effort when that model supports it. `GET /health` and `GET /v1/models` show basic status.
+`model` is optional. The default is the signed-in Codex CLI's default model, or Claude's if Codex is unavailable. Use `"model":"claude/sonnet"`, `"model":"codex/<model-name>"`, or `"provider":"claude"` to route explicitly. Unprefixed `claude-*` and `gpt-*` names also route to the matching CLI. Set `"reasoning_effort":"low"` (or `"reasoning":{"effort":"low"}`) to choose effort when that model supports it. `GET /health` shows basic status, and `GET /v1/models` lists `codex/<model>` for every model your Codex account offers, as the CLI last fetched them: the GPT-6 family (`codex/gpt-6-luna`, `codex/gpt-6-sol`, `codex/gpt-6-astra`, `codex/gpt-6.1-sol`, `codex/gpt-6.1-terra`) needs Codex CLI 0.166 or newer (`npm install -g @openai/codex@latest`); an older CLI answers a GPT-6 request with an error that says to update it.
 
 ## Scope
 
